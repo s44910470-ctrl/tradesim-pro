@@ -646,7 +646,7 @@ nav{position:fixed;top:0;left:0;right:0;z-index:1000;height:var(--nav-h);backgro
         <div class="fg"><label>Password</label><input type="password" id="l-pass" placeholder="••••••••"></div>
         <button class="btn btn-g" style="width:100%;padding:11px;font-size:13px;margin-top:4px" onclick="doLogin()">Log In</button>
         <div class="divider">or</div>
-        <button class="btn btn-o" style="width:100%;padding:11px;font-size:13px" onclick="doLogin()">🌐 Continue with Google</button>
+        <button class="btn btn-o" style="width:100%;padding:11px;font-size:13px" onclick="doGoogleLogin()">🌐 Continue with Google</button>
         <div class="auth-sw">No account? <a onclick="showAuth('signup')">Sign up free</a></div>
       </div>
       <div id="v-signup" style="display:none">
@@ -657,7 +657,7 @@ nav{position:fixed;top:0;left:0;right:0;z-index:1000;height:var(--nav-h);backgro
         <div class="fg"><label>Password</label><input type="password" id="s-pass" placeholder="Min 8 characters"></div>
         <button class="btn btn-g" style="width:100%;padding:11px;font-size:13px;margin-top:4px" onclick="doSignup()">Create Free Account</button>
         <div class="divider">or</div>
-        <button class="btn btn-o" style="width:100%;padding:11px;font-size:13px" onclick="doSignup()">🌐 Sign up with Google</button>
+        <button class="btn btn-o" style="width:100%;padding:11px;font-size:13px" onclick="doGoogleLogin()">🌐 Sign up with Google</button>
         <div class="auth-sw">Have account? <a onclick="showAuth('login')">Log in</a></div>
       </div>
     </div>
@@ -1112,26 +1112,11 @@ function showAuth(m){
 // ═══════════════════════════════════════════
 // AUTH
 // ═══════════════════════════════════════════
-function doLogin(){
-  const email=document.getElementById('l-email').value||'demo@tradesim.in';
-  S.user={name:'Aarav Sharma',email,joined:'Jan 2025'};
-  save(); updateNavUser();
-  toast('Welcome back! 👋','s'); go('dashboard');
-}
-function doSignup(){
-  const name=document.getElementById('s-name').value||'New Trader';
-  S.user={name,email:document.getElementById('s-email').value||'',joined:new Date().toLocaleDateString('en-IN',{month:'short',year:'numeric'})};
-  S.portfolio={cash:10000,positions:[],history:[]};
-  save(); updateNavUser();
-  toast('Account created! ₹10,000 virtual balance added 🎉','s'); go('terminal');
-}
-function doLogout(){
-  S.user=null; save();
-  document.getElementById('nav-right').innerHTML=`
-    <button class="btn btn-o" style="font-size:11px" onclick="go('auth')">Log In</button>
-    <button class="btn btn-g" style="font-size:11px" onclick="showAuth('signup')">Start Free</button>`;
-  go('home'); toast('Logged out','s');
-}
+// doLogin / doSignup / doLogout are overridden by the Firebase module below.
+// These stubs fire only if the module hasn't loaded yet (slow network).
+function doLogin()  { toast('Signing in…','w'); }
+function doSignup() { toast('Creating account…','w'); }
+function doLogout() { toast('Signing out…','w'); }
 function updateNavUser(){
   if(!S.user) return;
   document.getElementById('nav-right').innerHTML=`
@@ -1905,13 +1890,206 @@ function toast(msg,type='s'){
 }
 
 // ═══════════════════════════════════════════
-// INIT
+// INIT (non-auth parts — auth init is in Firebase module below)
 // ═══════════════════════════════════════════
 load();
-if(S.user) updateNavUser();
 fetchPrices();
 setInterval(fetchPrices,8000);
 renderLB();
+</script>
+
+<!-- ═══════════════════════════════════════════
+     FIREBASE AUTH MODULE
+     All Firebase logic lives here as type="module"
+     so it can use ES module imports.
+     It communicates back to the global scope via
+     window.FB_* helper functions defined below.
+═══════════════════════════════════════════ -->
+<script type="module">
+import { initializeApp }        from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, updateDoc, serverTimestamp }
+                                 from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  getAuth,
+  onAuthStateChanged,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+  signOut,
+  updateProfile
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+// ── Config ──────────────────────────────────
+const firebaseConfig = {
+  apiKey:            "AIzaSyD-dKHRh3RoIgYUorQW--VEdmYqQW8IJTM",
+  authDomain:        "tradesim-f0d9c.firebaseapp.com",
+  projectId:         "tradesim-f0d9c",
+  storageBucket:     "tradesim-f0d9c.appspot.com",
+  messagingSenderId: "682773469778",
+  appId:             "1:682773469778:web:c1df4713d6194a25b85d8b"
+};
+
+const app      = initializeApp(firebaseConfig);
+const auth     = getAuth(app);
+const db       = getFirestore(app);
+const provider = new GoogleAuthProvider();
+
+// ── Firestore helpers ────────────────────────
+async function ensureUserDoc(user, displayName) {
+  const ref  = doc(db, "users", user.uid);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) {
+    // Brand-new user — create portfolio document
+    await setDoc(ref, {
+      uid:       user.uid,
+      name:      displayName || user.displayName || user.email.split("@")[0],
+      email:     user.email,
+      joined:    serverTimestamp(),
+      portfolio: { cash: 10000, positions: [], history: [] }
+    });
+    return { cash: 10000, positions: [], history: [] };
+  }
+  return snap.data().portfolio;
+}
+
+async function savePortfolioToFirestore(uid, portfolio) {
+  try {
+    await updateDoc(doc(db, "users", uid), { portfolio });
+  } catch (e) {
+    console.warn("Firestore save failed — falling back to localStorage", e);
+  }
+}
+
+// ── Auth state listener ──────────────────────
+// Fires on every page load & after login/logout.
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    // ── Logged in ──
+    const portfolio = await ensureUserDoc(user, user.displayName);
+
+    // Push real data into the global state
+    window.S.user = {
+      uid:    user.uid,
+      name:   user.displayName || user.email.split("@")[0],
+      email:  user.email,
+      joined: new Date().toLocaleDateString("en-IN", { month:"short", year:"numeric" })
+    };
+    window.S.portfolio = portfolio;
+
+    // Expose save-to-Firestore so the existing save() function can call it
+    window._fbSave = () => savePortfolioToFirestore(user.uid, window.S.portfolio);
+
+    window.updateNavUser();
+    // If we're still on the auth page, move to dashboard
+    if (document.getElementById("page-auth").classList.contains("active")) {
+      window.go("dashboard");
+    }
+  } else {
+    // ── Logged out ──
+    window.S.user = null;
+    window._fbSave = null;
+    document.getElementById("nav-right").innerHTML = `
+      <button class="btn btn-o" style="font-size:11px" onclick="go('auth')">Log In</button>
+      <button class="btn btn-g" style="font-size:11px" onclick="showAuth('signup')">Start Free</button>`;
+  }
+});
+
+// ── Expose to global scope ───────────────────
+// The existing onclick handlers call doLogin(), doSignup(), doLogout() and
+// the Google buttons. We replace them here.
+
+window.doLogin = async function () {
+  const email = document.getElementById("l-email").value.trim();
+  const pass  = document.getElementById("l-pass").value;
+  if (!email || !pass) { window.toast("Enter email and password", "e"); return; }
+  setAuthLoading(true);
+  try {
+    await signInWithEmailAndPassword(auth, email, pass);
+    // onAuthStateChanged handles the rest
+    window.toast("Welcome back! 👋", "s");
+  } catch (e) {
+    window.toast(friendlyError(e.code), "e");
+  }
+  setAuthLoading(false);
+};
+
+window.doSignup = async function () {
+  const name  = document.getElementById("s-name").value.trim()  || "New Trader";
+  const email = document.getElementById("s-email").value.trim();
+  const pass  = document.getElementById("s-pass").value;
+  if (!email || !pass) { window.toast("Enter email and password", "e"); return; }
+  if (pass.length < 8)  { window.toast("Password must be at least 8 characters", "e"); return; }
+  setAuthLoading(true);
+  try {
+    const cred = await createUserWithEmailAndPassword(auth, email, pass);
+    await updateProfile(cred.user, { displayName: name });
+    // ensureUserDoc will be called by onAuthStateChanged
+    window.toast("Account created! ₹10,000 balance added 🎉", "s");
+    window.go("terminal");
+  } catch (e) {
+    window.toast(friendlyError(e.code), "e");
+  }
+  setAuthLoading(false);
+};
+
+window.doGoogleLogin = async function () {
+  setAuthLoading(true);
+  try {
+    await signInWithPopup(auth, provider);
+    window.toast("Signed in with Google 🎉", "s");
+  } catch (e) {
+    window.toast(friendlyError(e.code), "e");
+  }
+  setAuthLoading(false);
+};
+
+window.doLogout = async function () {
+  await signOut(auth);
+  window.S.portfolio = { cash: 10000, positions: [], history: [] };
+  window.go("home");
+  window.toast("Logged out", "s");
+};
+
+// ── Helpers ──────────────────────────────────
+function setAuthLoading(on) {
+  ["l-email","l-pass","s-name","s-email","s-pass"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = on;
+  });
+}
+
+function friendlyError(code) {
+  const map = {
+    "auth/user-not-found":       "No account found with that email.",
+    "auth/wrong-password":       "Incorrect password.",
+    "auth/email-already-in-use": "Email already registered. Try logging in.",
+    "auth/weak-password":        "Password must be at least 8 characters.",
+    "auth/invalid-email":        "Please enter a valid email address.",
+    "auth/popup-closed-by-user": "Google sign-in was cancelled.",
+    "auth/network-request-failed": "Network error. Check your connection.",
+  };
+  return map[code] || "Something went wrong. Please try again.";
+}
+</script>
+
+<!-- Patch existing save() to also write to Firestore when logged in -->
+<script>
+// Override the plain save() so it calls Firestore too
+const _origSave = window.save;
+window.save = function() {
+  // Always keep localStorage as a cache / offline fallback
+  try {
+    localStorage.setItem('ts2_p', JSON.stringify(S.portfolio));
+    localStorage.setItem('ts2_u', JSON.stringify(S.user));
+  } catch(e) {}
+  // If Firebase is ready, persist to Firestore
+  if (typeof window._fbSave === 'function') {
+    window._fbSave();
+  }
+};
+
+// Google buttons now call doGoogleLogin() directly via onclick.
 </script>
 </body>
 </html>
